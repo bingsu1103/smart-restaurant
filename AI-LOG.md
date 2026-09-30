@@ -12,6 +12,7 @@
 - Identified the actual slide locations of the feature-spec template and the five thin places after the assignment text referenced outdated slide numbers.
 - Helped turn the equal bill-splitting requirement into a concrete API and data contract, error behaviour, non-goals, limits, and runnable acceptance criteria.
 - Reviewed the specification for placeholders, ambiguous behaviour, missing rubric coverage, arithmetic consistency, duplicate requests, partial payment failure, permissions, and concurrency.
+- Revised the initial specification after a rubric audit to define state reload, event payloads, payment reconciliation, exact status transitions, idempotency storage, and low-value split limits.
 - Drafted the initial self-assessment with evidence pointing to the submitted specification.
 
 ## Decisions confirmed by the student
