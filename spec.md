@@ -1,6 +1,6 @@
 # Split the bill
 
-**Status:** Draft for implementation
+**Status:** Ready for handoff
 
 **Owner:** Ngô Gia An (23120205)
 
@@ -8,76 +8,76 @@
 
 ## Goal
 
-Allow customers at one table to divide its single open order into equal shares and pay independently from their own phones, while keeping the order open until every share is paid.
+Let customers at one table divide its single open order into equal shares and pay independently from their phones. The order remains `open` until every share is paid, then becomes `closed`.
 
 ## Out of scope
 
-- Splitting by item, percentage, or a customer-entered amount.
-- Tips, refunds, transfers between shares, split cancellation, combining tables, and multiple currencies.
-- Changes to kitchen tickets. Creating a split freezes the order's items, discounts, and VAT-inclusive total until payment completes.
+- Splitting by item, percentage, or customer-entered amount.
+- Tips, refunds, share transfers, split cancellation, combining tables, and currencies other than VND.
+- Kitchen-ticket changes. A split freezes the order's items, discounts, VAT-inclusive total, and other price inputs until payment completes.
 
 ## Flow
 
-1. Any authenticated customer currently joined to the table requests an equal split of its non-empty open order into `ways` shares.
-2. The server freezes the order total, creates the split atomically, assigns any rounding remainder to the lowest-numbered shares, and broadcasts `bill.split.created` to the table room.
-3. Each customer pays one unpaid share using the existing payment flow. A successful payment marks only that share paid and broadcasts `bill.share.paid`.
-4. A failed or pending payment does not change other shares. When every share is paid, the server marks the split paid, closes the order, and broadcasts `bill.paid`.
+1. An authenticated customer currently joined to the table requests `ways` equal shares for its non-empty open order.
+2. The server freezes the total, creates every share atomically, assigns rounding remainder to the lowest positions, and broadcasts the split.
+3. Customers pay unpaid shares through the existing provider. The first confirmed share changes the split to `partially_paid`; each result updates and broadcasts only that share.
+4. The final confirmed share changes the split to `paid`, the order to `closed`, and emits `bill.paid` exactly once.
 
 ## Contract
 
-All amounts are integer VND and already include discounts and VAT. All endpoints require a valid JWT and table membership.
+Amounts are integer VND after discounts and VAT. Every endpoint requires a valid JWT and current table membership.
 
-`POST /api/tables/:tableId/bill/split`
+- `POST /api/tables/:tableId/bill/split` with `{ "mode":"equal", "ways":3, "idempotencyKey":"uuid" }` returns `201 BillSplit`.
+- `GET /api/tables/:tableId/bill/split` returns `200 BillSplit`, or `404 no_active_split`.
+- `POST /api/bill-shares/:shareId/pay` with `{ "paymentMethodToken":"provider-token", "idempotencyKey":"uuid" }` returns `201 SharePayment` when confirmed or `202 SharePayment` when pending.
 
-```json
-{ "mode": "equal", "ways": 3, "idempotencyKey": "uuid" }
-```
-
-`201` returns `BillSplit`:
+`BillSplit` example for `400000 / 3`:
 
 ```json
-{ "splitId": 42, "orderId": 91, "totalAmount": 400000, "currency": "VND", "status": "unpaid", "version": 1, "shares": [{ "id": 1, "position": 1, "amount": 133334, "status": "unpaid", "paymentId": null }] }
+{"splitId":42,"orderId":91,"totalAmount":400000,"currency":"VND","status":"unpaid","shares":[{"id":1,"position":1,"amount":133334,"status":"unpaid","paymentId":null},{"id":2,"position":2,"amount":133333,"status":"unpaid","paymentId":null},{"id":3,"position":3,"amount":133333,"status":"unpaid","paymentId":null}]}
 ```
 
-`POST /api/bill-shares/:shareId/pay`
+`SharePayment` is `{ "shareId":1, "status":"paid|pending", "paymentId":"pay_123" }`. Repeating a POST with the same actor and idempotency key replays its original status and body without another split or provider charge. A different key may retry a failed attempt; it returns `409 payment_exists` while that share has a pending or paid attempt.
 
-```json
-{ "paymentMethodToken": "provider-token", "idempotencyKey": "uuid" }
-```
-
-`201` returns `{ "shareId": 1, "status": "paid", "paymentId": "pay_123" }`; `202` returns the same shape with `status: "pending"`. Repeating either POST with the same authenticated user and idempotency key returns the original status and body without creating another split or charge.
+Socket.IO table-room events have fixed payloads: `bill.split.created` carries `BillSplit`; `bill.share.updated` carries `{ "splitId":42,"share":{"id":1,"status":"paid","paymentId":"pay_123"} }`; `bill.paid` carries `{ "splitId":42,"orderId":91,"splitStatus":"paid","orderStatus":"closed" }`.
 
 All errors use `ApiError`:
 
 ```json
-{ "error": { "code": "split_exists", "message": "The order already has a split.", "details": { "splitId": 42 } } }
+{"error":{"code":"split_exists","message":"The order already has a split.","details":{"splitId":42}}}
 ```
 
-Relevant codes: `401 unauthenticated`; `403 not_at_table`; `404 table_or_share_not_found`; `409 split_exists`, `order_changed`, or `share_already_paid` (includes the existing ID in `details`); `422 order_empty` or `invalid_ways`; `429 rate_limited` (includes `retryAfterSeconds`); `502 payment_failed` (includes `paymentId` when available).
+Codes: `401 unauthenticated`; `403 not_at_table`; `404 table_not_found|share_not_found|no_open_order|no_active_split`; `409 split_exists|bill_locked|payment_exists`; `422 order_empty|invalid_ways`; `429 rate_limited` with `retryAfterSeconds`; `502 payment_failed` with `paymentId` when available.
 
 ## Data
 
-- `bill_splits(id, order_id UNIQUE, ways, total_amount, status, idempotency_key UNIQUE)`; status is `unpaid`, `partially_paid`, or `paid`.
-- `bill_shares(id, split_id, position, amount, status, payment_id NULL, UNIQUE(split_id, position))`; status is `unpaid`, `pending`, or `paid`.
-- Invariants: `2 <= ways <= 20`; exactly `ways` shares exist; each amount is positive; share amounts sum exactly to the frozen order total; paid shares are immutable; at most one active split exists per order.
+- `bill_splits(id, order_id UNIQUE, created_by, idempotency_key, ways, total_amount, status, UNIQUE(created_by,idempotency_key))`; status: `unpaid|partially_paid|paid`.
+- `bill_shares(id, split_id, position, amount, status, payment_id NULL, UNIQUE(split_id,position))`; status: `unpaid|pending|paid`.
+- `payment_attempts(id, share_id, actor_id, idempotency_key, provider_payment_id NULL, status, UNIQUE(actor_id,idempotency_key), UNIQUE(provider_payment_id))`; status: `pending|paid|failed`.
+- Existing `orders.status` stays `open` until completion, then becomes `closed`. An active split makes price-changing order operations return `409 bill_locked`.
+- Invariants: `2 <= ways <= min(20,totalAmount)`; exactly `ways` positive shares; their sum equals the frozen total; paid shares are immutable; one active split per order.
 
-## Errors and thin places
+## Errors
 
-- **Empty state:** an absent open order returns `404`; an order with no items or total `<= 0` returns `422 order_empty` and creates nothing.
-- **Partial failure:** a declined provider charge returns `502` and leaves that share unpaid. If the provider accepted but confirmation is incomplete, return `202 pending`; retries reuse the payment ID and never charge again. Other paid shares remain paid and no automatic refund occurs.
-- **Permissions:** only authenticated current table members may create a split or pay its shares; other users receive `403` with no data mutation.
-- **Concurrency and duplicates:** creation runs under an order lock. Competing keys produce one split and one `409 split_exists`; the same key replays the original response. Competing payments produce one charge; the loser receives `409 share_already_paid` with the existing payment ID.
-- **Limits:** `ways` outside `2..20` returns `422`. More than 10 split/payment requests per user per table per minute returns `429`; no operation is attempted until the reported retry interval expires.
+- **Empty state:** no open order returns `404 no_open_order`; an order with no items or total `<= 0` returns `422 order_empty` and writes nothing.
+- **Partial failure:** a provider decline marks the attempt `failed`, leaves the share `unpaid`, and returns `502`; other shares remain unchanged and are never auto-refunded. An accepted but unconfirmed charge returns `202 pending`; the existing provider callback resolves it to `paid` or `unpaid` and emits one `bill.share.updated`.
+- **Permissions:** non-members receive `403` with no table, split, payment, or event mutation.
+- **Concurrency and duplicates:** split creation locks the order. Competing keys yield one `201` and one `409 split_exists`. Payment locks the share; competing keys yield one provider charge and one `409 payment_exists` containing its payment ID and status. Same-key requests replay.
+- **Limits:** invalid `ways` returns `422`. More than 10 split/payment requests per user per table in 60 seconds returns `429`; no operation is attempted before `retryAfterSeconds` expires.
 
 ## Acceptance
 
-- **AC1 — arithmetic:** splitting `405000` three ways produces `135000, 135000, 135000`; splitting `400000` three ways produces `133334, 133333, 133333`. In every case the shares sum to the frozen total.
-- **AC2 — failure isolation:** after two of three shares are paid, a failed third payment leaves the first two paid, the third unpaid, and the order open; no refund is created.
-- **AC3 — concurrency:** two simultaneous payment requests for one unpaid share result in exactly one provider charge; the other response is `409` and contains the same payment ID.
-- **AC4 — duplicate creation:** retrying split creation with the same key returns the original `201` body; a different key returns `409` with the existing split ID.
-- **AC5 — completion:** paying the final unpaid share changes the split and order to paid/closed exactly once and emits one `bill.paid` event.
-- **AC6 — frozen order:** adding an item, discount, or VAT change after split creation returns `409 order_changed`; no order or share amount changes.
+- **AC1:** `405000 / 3` produces `135000,135000,135000`; `400000 / 3` produces `133334,133333,133333`; shares always sum to the frozen total.
+- **AC2:** an empty order returns `422 order_empty`, creates no split/share rows, and emits no event.
+- **AC3:** after two shares are paid, a failed third payment leaves two `paid`, one `unpaid`, the split `partially_paid`, and the order `open`; no refund exists.
+- **AC4:** two simultaneous payments for one unpaid share produce one provider charge; the loser gets `409 payment_exists` with the winner's payment ID and status.
+- **AC5:** a same-key split retry replays the original `201 BillSplit`; a different key gets `409 split_exists` with its ID.
+- **AC6:** an unconfirmed accepted charge returns `202 pending`; same-key retry creates no charge; one provider callback changes it to `paid` or `unpaid` and emits one update.
+- **AC7:** a non-member split or payment request returns `403`, changes no row, and emits no event.
+- **AC8:** the eleventh split/payment POST by one user for one table within 60 seconds returns `429` with a positive `retryAfterSeconds` and performs no operation.
+- **AC9:** the final payment changes split `paid` and order `closed` exactly once and emits one `bill.paid` payload matching the contract.
+- **AC10:** after split creation, adding an item or changing discount/VAT returns `409 bill_locked`; the order total and all shares remain unchanged.
 
 ## Constraints
 
-Use the existing React, Express, JWT, Socket.IO, and payment-provider stack. Add no runtime dependency. Store no card data or payment token after the provider call. Database writes for split creation and state transitions must be transactional, and monetary arithmetic must use integer VND only.
+Use the existing React, Express, JWT, Socket.IO, and payment-provider stack; add no runtime dependency. Never store card data or retain a payment token after the provider call. Split creation and every local state transition are transactional.
