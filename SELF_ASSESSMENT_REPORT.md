@@ -6,9 +6,9 @@ Total I claim: 70 / 100
 
 | Criterion | Max | I claim | Evidence |
 |---|---:|---:|---|
-| Contract | 25 | 25 | `spec.md` §Contract defines both endpoints, request and response payloads, replay behaviour, status codes, and the named `ApiError` shape; §Data defines stored fields and invariants. |
-| Acceptance criteria | 25 | 25 | `spec.md` AC1–AC6 use concrete values and observable results. AC1 covers exact and rounded arithmetic, AC2 a payment failure, and AC3 simultaneous payment requests. |
-| Edge cases and non-goals | 20 | 20 | `spec.md` §Errors and thin places explicitly covers all five thin places: empty state, partial failure, permissions, concurrency and duplicates, and limits. §Out of scope is explicit. |
+| Contract | 25 | 25 | `spec.md` §Contract defines three endpoints, complete request/response examples, Socket.IO payloads, idempotent replay, status codes, and named `ApiError`; §Data defines fields, states, uniqueness, and monetary invariants. |
+| Acceptance criteria | 25 | 25 | `spec.md` AC1–AC10 contain concrete inputs and observable results. They cover exact and rounded arithmetic, empty state, payment failure, simultaneous requests, duplicates, pending reconciliation, permissions, limits, completion, and order locking. |
+| Edge cases and non-goals | 20 | 20 | `spec.md` §Errors explicitly covers all five thin places: empty state, partial failure, permissions, concurrency and duplicates, and limits. §Out of scope is explicit. |
 | Implementability | 20 | 0 | Not assessable before the 1 October swap: no implementer question list exists yet. This row will be rescored from `questions.md`. |
 | Revision | 10 | 0 | No revision is due before the swap. This row will be rescored after every received question is addressed visibly in `spec-revised.md`. |
 
