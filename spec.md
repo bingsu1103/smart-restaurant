@@ -1,7 +1,9 @@
 # Split the bill
 
-**Status:** Draft for implementation  
-**Owner:** Ngô Gia An (23120205)  
+**Status:** Draft for implementation
+
+**Owner:** Ngô Gia An (23120205)
+
 **Feature of:** smart-restaurant
 
 ## Goal
